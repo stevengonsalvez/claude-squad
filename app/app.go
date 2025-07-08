@@ -20,9 +20,9 @@ import (
 const GlobalInstanceLimit = 10
 
 // Run is the main entrypoint into the application.
-func Run(ctx context.Context, program string, autoYes bool) error {
+func Run(ctx context.Context, program string, autoYes bool, dockerImage string) error {
 	p := tea.NewProgram(
-		newHome(ctx, program, autoYes),
+		newHome(ctx, program, autoYes, dockerImage),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
@@ -51,6 +51,7 @@ type home struct {
 
 	program string
 	autoYes bool
+	dockerImage string
 
 	// storage is the interface for saving/loading data to/from the app's state
 	storage *session.Storage
@@ -93,7 +94,7 @@ type home struct {
 	confirmationOverlay *overlay.ConfirmationOverlay
 }
 
-func newHome(ctx context.Context, program string, autoYes bool) *home {
+func newHome(ctx context.Context, program string, autoYes bool, dockerImage string) *home {
 	// Load application config
 	appConfig := config.LoadConfig()
 
@@ -117,6 +118,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		appConfig:    appConfig,
 		program:      program,
 		autoYes:      autoYes,
+		dockerImage:  dockerImage,
 		state:        stateDefault,
 		appState:     appState,
 	}
@@ -222,15 +224,13 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		// Handle mouse wheel scrolling in the diff view
 		if m.tabbedWindow.IsInDiffTab() {
-			if msg.Action == tea.MouseActionPress {
-				switch msg.Button {
-				case tea.MouseButtonWheelUp:
-					m.tabbedWindow.ScrollUp()
-					return m, m.instanceChanged()
-				case tea.MouseButtonWheelDown:
-					m.tabbedWindow.ScrollDown()
-					return m, m.instanceChanged()
-				}
+			switch msg.Type {
+			case tea.MouseWheelUp:
+				m.tabbedWindow.ScrollUp()
+				return m, m.instanceChanged()
+			case tea.MouseWheelDown:
+				m.tabbedWindow.ScrollDown()
+				return m, m.instanceChanged()
 			}
 		}
 		return m, nil
@@ -311,7 +311,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			m.promptAfterName = false
 			m.list.Kill()
 			return m, tea.Sequence(
-				tea.WindowSize(),
 				func() tea.Msg {
 					m.menu.SetState(ui.StateDefault)
 					return nil
@@ -355,7 +354,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				m.showHelpScreen(helpTypeInstanceStart, nil)
 			}
 
-			return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+			return m, tea.Batch(m.instanceChanged())
 		case tea.KeyRunes:
 			if len(instance.Title) >= 32 {
 				return m, m.handleError(fmt.Errorf("title cannot be longer than 32 characters"))
@@ -380,7 +379,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			m.instanceChanged()
 
 			return m, tea.Sequence(
-				tea.WindowSize(),
 				func() tea.Msg {
 					m.menu.SetState(ui.StateDefault)
 					return nil
@@ -410,7 +408,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			m.textInputOverlay = nil
 			m.state = stateDefault
 			return m, tea.Sequence(
-				tea.WindowSize(),
 				func() tea.Msg {
 					m.menu.SetState(ui.StateDefault)
 					m.showHelpScreen(helpTypeInstanceStart, nil)
@@ -452,9 +449,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
 		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:   "",
-			Path:    ".",
-			Program: m.program,
+			Title:       "",
+			Path:        ".",
+			Program:     m.program,
+			DockerImage: m.dockerImage,
 		})
 		if err != nil {
 			return m, m.handleError(err)
@@ -473,9 +471,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
 		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:   "",
-			Path:    ".",
-			Program: m.program,
+			Title:       "",
+			Path:        ".",
+			Program:     m.program,
+			DockerImage: m.dockerImage,
 		})
 		if err != nil {
 			return m, m.handleError(err)
@@ -588,13 +587,13 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if err := selected.Resume(); err != nil {
 			return m, m.handleError(err)
 		}
-		return m, tea.WindowSize()
+		return m, nil
 	case keys.KeyEnter:
 		if m.list.NumInstances() == 0 {
 			return m, nil
 		}
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || !selected.TmuxAlive() {
+		if selected == nil || selected.Paused() || !selected.ContainerAlive() {
 			return m, nil
 		}
 		// Show help screen before attaching

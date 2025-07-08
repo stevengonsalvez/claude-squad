@@ -36,6 +36,8 @@ type Config struct {
 	DaemonPollInterval int `json:"daemon_poll_interval"`
 	// BranchPrefix is the prefix used for git branches created by the application.
 	BranchPrefix string `json:"branch_prefix"`
+	// DockerImageMappings maps program names to Docker images
+	DockerImageMappings map[string]string `json:"docker_image_mappings"`
 }
 
 // DefaultConfig returns the default configuration
@@ -58,6 +60,11 @@ func DefaultConfig() *Config {
 			}
 			return fmt.Sprintf("%s/", strings.ToLower(user.Username))
 		}(),
+		DockerImageMappings: map[string]string{
+			"claude":  "claudesquad/claude:latest",
+			"aider":   "claudesquad/aider:latest", 
+			"gemini":  "claudesquad/gemini:latest",
+		},
 	}
 }
 

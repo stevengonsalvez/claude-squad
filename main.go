@@ -2,26 +2,27 @@ package main
 
 import (
 	"claude-squad/app"
-	cmd2 "claude-squad/cmd"
 	"claude-squad/config"
 	"claude-squad/daemon"
 	"claude-squad/log"
 	"claude-squad/session"
+	"claude-squad/session/docker"
 	"claude-squad/session/git"
-	"claude-squad/session/tmux"
 	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 
+	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 )
 
 var (
-	version     = "1.0.5"
-	programFlag string
-	autoYesFlag bool
-	daemonFlag  bool
+	version         = "1.0.5"
+	programFlag     string
+	autoYesFlag     bool
+	daemonFlag      bool
+	dockerImageFlag string
 	rootCmd     = &cobra.Command{
 		Use:   "claude-squad",
 		Short: "Claude Squad - Manage multiple AI agents like Claude Code, Aider, Codex, and Amp.",
@@ -71,7 +72,7 @@ var (
 				log.ErrorLog.Printf("failed to stop daemon: %v", err)
 			}
 
-			return app.Run(ctx, program, autoYes)
+			return app.Run(ctx, program, autoYes, dockerImageFlag)
 		},
 	}
 
@@ -92,10 +93,17 @@ var (
 			}
 			fmt.Println("Storage has been reset successfully")
 
-			if err := tmux.CleanupSessions(cmd2.MakeExecutor()); err != nil {
-				return fmt.Errorf("failed to cleanup tmux sessions: %w", err)
+			// Cleanup Docker containers
+			dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+			if err != nil {
+				return fmt.Errorf("failed to create Docker client: %w", err)
 			}
-			fmt.Println("Tmux sessions have been cleaned up")
+			defer dockerClient.Close()
+
+			if err := docker.CleanupContainers(dockerClient); err != nil {
+				return fmt.Errorf("failed to cleanup docker containers: %w", err)
+			}
+			fmt.Println("Docker containers have been cleaned up")
 
 			if err := git.CleanupWorktrees(); err != nil {
 				return fmt.Errorf("failed to cleanup worktrees: %w", err)
@@ -143,6 +151,8 @@ var (
 func init() {
 	rootCmd.Flags().StringVarP(&programFlag, "program", "p", "",
 		"Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')")
+	rootCmd.Flags().StringVarP(&dockerImageFlag, "docker-image", "d", "",
+		"Custom Docker image to use for new instances (e.g. 'myrepo/custom-aider:latest')")
 	rootCmd.Flags().BoolVarP(&autoYesFlag, "autoyes", "y", false,
 		"[experimental] If enabled, all instances will automatically accept prompts")
 	rootCmd.Flags().BoolVar(&daemonFlag, "daemon", false, "Run a program that loads all sessions"+

@@ -70,7 +70,7 @@ func (h helpType) ToContent(instance *session.Instance) string {
 			"",
 			descStyle.Render("New session created:"),
 			descStyle.Render(fmt.Sprintf("• Git branch: %s (isolated worktree)", lipgloss.NewStyle().Bold(true).Render(instance.Branch))),
-			descStyle.Render(fmt.Sprintf("• %s running in background tmux session", lipgloss.NewStyle().Bold(true).Render(instance.Program))),
+			descStyle.Render(fmt.Sprintf("• %s running in background Docker container", lipgloss.NewStyle().Bold(true).Render(instance.Program))),
 			"",
 			headerStyle.Render("Managing:"),
 			keyStyle.Render("↵/o")+descStyle.Render("   - Attach to the session to interact with it directly"),
@@ -153,7 +153,6 @@ func (m *home) handleHelpState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if shouldClose {
 		m.state = stateDefault
 		return m, tea.Sequence(
-			tea.WindowSize(),
 			func() tea.Msg {
 				m.menu.SetState(ui.StateDefault)
 				return nil
