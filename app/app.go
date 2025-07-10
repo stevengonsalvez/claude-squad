@@ -20,9 +20,9 @@ import (
 const GlobalInstanceLimit = 10
 
 // Run is the main entrypoint into the application.
-func Run(ctx context.Context, program string, autoYes bool, dockerImage string) error {
+func Run(ctx context.Context, program string, autoYes bool, useDocker bool, dockerImage string) error {
 	p := tea.NewProgram(
-		newHome(ctx, program, autoYes, dockerImage),
+		newHome(ctx, program, autoYes, useDocker, dockerImage),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
@@ -51,6 +51,7 @@ type home struct {
 
 	program string
 	autoYes bool
+	useDocker bool
 	dockerImage string
 
 	// storage is the interface for saving/loading data to/from the app's state
@@ -94,7 +95,7 @@ type home struct {
 	confirmationOverlay *overlay.ConfirmationOverlay
 }
 
-func newHome(ctx context.Context, program string, autoYes bool, dockerImage string) *home {
+func newHome(ctx context.Context, program string, autoYes bool, useDocker bool, dockerImage string) *home {
 	// Load application config
 	appConfig := config.LoadConfig()
 
@@ -118,6 +119,7 @@ func newHome(ctx context.Context, program string, autoYes bool, dockerImage stri
 		appConfig:    appConfig,
 		program:      program,
 		autoYes:      autoYes,
+		useDocker:    useDocker,
 		dockerImage:  dockerImage,
 		state:        stateDefault,
 		appState:     appState,
@@ -452,6 +454,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			Title:       "",
 			Path:        ".",
 			Program:     m.program,
+			UseDocker:   m.useDocker,
 			DockerImage: m.dockerImage,
 		})
 		if err != nil {
@@ -474,6 +477,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			Title:       "",
 			Path:        ".",
 			Program:     m.program,
+			UseDocker:   m.useDocker,
 			DockerImage: m.dockerImage,
 		})
 		if err != nil {

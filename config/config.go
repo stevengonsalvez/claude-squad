@@ -38,6 +38,10 @@ type Config struct {
 	BranchPrefix string `json:"branch_prefix"`
 	// DockerImageMappings maps program names to Docker images
 	DockerImageMappings map[string]string `json:"docker_image_mappings"`
+	// EnvironmentVariables maps environment variable names to values
+	EnvironmentVariables map[string]string `json:"environment_variables,omitempty"`
+	// MCPServersFile path to the MCP servers configuration file
+	MCPServersFile string `json:"mcp_servers_file,omitempty"`
 }
 
 // DefaultConfig returns the default configuration
@@ -46,6 +50,13 @@ func DefaultConfig() *Config {
 	if err != nil {
 		log.ErrorLog.Printf("failed to get claude command: %v", err)
 		program = defaultProgram
+	}
+
+	// Get config directory for MCP servers file path
+	configDir, err := GetConfigDir()
+	if err != nil {
+		log.ErrorLog.Printf("failed to get config directory: %v", err)
+		configDir = ""
 	}
 
 	return &Config{
@@ -61,10 +72,15 @@ func DefaultConfig() *Config {
 			return fmt.Sprintf("%s/", strings.ToLower(user.Username))
 		}(),
 		DockerImageMappings: map[string]string{
-			"claude":  "claudesquad/claude:latest",
-			"aider":   "claudesquad/aider:latest", 
-			"gemini":  "claudesquad/gemini:latest",
+			"claude":  "claudesquad/enhanced:latest",
+			"aider":   "claudesquad/enhanced:latest", 
+			"gemini":  "claudesquad/enhanced:latest",
 		},
+		EnvironmentVariables: map[string]string{
+			"GITHUB_TOKEN": "${GITHUB_TOKEN}",
+			"GOOGLE_AI_STUDIO_API_KEY": "${GOOGLE_AI_STUDIO_API_KEY}",
+		},
+		MCPServersFile: filepath.Join(configDir, "mcp-servers.txt"),
 	}
 }
 

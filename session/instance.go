@@ -4,6 +4,7 @@ import (
 	"claude-squad/log"
 	"claude-squad/session/docker"
 	"claude-squad/session/git"
+	"claude-squad/session/tmux"
 	"path/filepath"
 
 	"fmt"
@@ -51,7 +52,9 @@ type Instance struct {
 	AutoYes bool
 	// Prompt is the initial prompt to pass to the instance on startup
 	Prompt string
-	// CustomDockerImage is the custom Docker image to use for this instance
+	// UseDocker determines whether to use Docker containers (true) or tmux sessions (false)
+	UseDocker bool
+	// CustomDockerImage is the custom Docker image to use for this instance (only used when UseDocker is true)
 	CustomDockerImage string
 
 	// DiffStats stores the current git diff statistics
@@ -60,8 +63,10 @@ type Instance struct {
 	// The below fields are initialized upon calling Start().
 
 	started bool
-	// dockerContainer is the Docker container for the instance.
+	// dockerContainer is the Docker container for the instance (only when UseDocker is true).
 	dockerContainer *docker.DockerContainer
+	// tmuxSession is the tmux session for the instance (only when UseDocker is false).
+	tmuxSession *tmux.TmuxSession
 	// gitWorktree is the git worktree for the instance.
 	gitWorktree *git.GitWorktree
 }
@@ -79,6 +84,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		UpdatedAt:         time.Now(),
 		Program:           i.Program,
 		AutoYes:           i.AutoYes,
+		UseDocker:         i.UseDocker,
 		CustomDockerImage: i.CustomDockerImage,
 	}
 
@@ -117,6 +123,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		CreatedAt:         data.CreatedAt,
 		UpdatedAt:         data.UpdatedAt,
 		Program:           data.Program,
+		UseDocker:         data.UseDocker,
 		CustomDockerImage: data.CustomDockerImage,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
@@ -135,13 +142,17 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 	if instance.Paused() {
 		instance.started = true
 		var err error
-		if instance.CustomDockerImage != "" {
-			instance.dockerContainer, err = docker.NewDockerContainerWithImage(instance.Title, instance.Program, instance.CustomDockerImage)
+		if instance.UseDocker {
+			if instance.CustomDockerImage != "" {
+				instance.dockerContainer, err = docker.NewDockerContainerWithImage(instance.Title, instance.Program, instance.CustomDockerImage)
+			} else {
+				instance.dockerContainer, err = docker.NewDockerContainer(instance.Title, instance.Program)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to create docker container: %w", err)
+			}
 		} else {
-			instance.dockerContainer, err = docker.NewDockerContainer(instance.Title, instance.Program)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to create docker container: %w", err)
+			instance.tmuxSession = tmux.NewTmuxSession(instance.Title, instance.Program)
 		}
 	} else {
 		if err := instance.Start(false); err != nil {
@@ -162,7 +173,9 @@ type InstanceOptions struct {
 	Program string
 	// If AutoYes is true, then
 	AutoYes bool
-	// DockerImage is the custom Docker image to use for the instance
+	// UseDocker determines whether to use Docker containers (true) or tmux sessions (false)
+	UseDocker bool
+	// DockerImage is the custom Docker image to use for the instance (only used when UseDocker is true)
 	DockerImage string
 }
 
@@ -185,6 +198,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		CreatedAt:         t,
 		UpdatedAt:         t,
 		AutoYes:           false,
+		UseDocker:         opts.UseDocker,
 		CustomDockerImage: opts.DockerImage,
 	}, nil
 }
@@ -206,18 +220,24 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		return fmt.Errorf("instance title cannot be empty")
 	}
 
-	// Create Docker container with custom image if specified
-	var dockerContainer *docker.DockerContainer
+	// Create Docker container or tmux session based on UseDocker flag
 	var err error
-	if i.CustomDockerImage != "" {
-		dockerContainer, err = docker.NewDockerContainerWithImage(i.Title, i.Program, i.CustomDockerImage)
+	if i.UseDocker {
+		// Create Docker container with custom image if specified
+		var dockerContainer *docker.DockerContainer
+		if i.CustomDockerImage != "" {
+			dockerContainer, err = docker.NewDockerContainerWithImage(i.Title, i.Program, i.CustomDockerImage)
+		} else {
+			dockerContainer, err = docker.NewDockerContainer(i.Title, i.Program)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to create docker container: %w", err)
+		}
+		i.dockerContainer = dockerContainer
 	} else {
-		dockerContainer, err = docker.NewDockerContainer(i.Title, i.Program)
+		// Create tmux session
+		i.tmuxSession = tmux.NewTmuxSession(i.Title, i.Program)
 	}
-	if err != nil {
-		return fmt.Errorf("failed to create docker container: %w", err)
-	}
-	i.dockerContainer = dockerContainer
 
 	if firstTimeSetup {
 		gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.Title)
@@ -241,10 +261,17 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	}()
 
 	if !firstTimeSetup {
-		// Reuse existing container
-		if err := i.dockerContainer.Restore(); err != nil {
-			setupErr = fmt.Errorf("failed to restore existing container: %w", err)
-			return setupErr
+		// Reuse existing container or tmux session
+		if i.UseDocker {
+			if err := i.dockerContainer.Restore(); err != nil {
+				setupErr = fmt.Errorf("failed to restore existing container: %w", err)
+				return setupErr
+			}
+		} else {
+			if err := i.tmuxSession.Restore(); err != nil {
+				setupErr = fmt.Errorf("failed to restore existing tmux session: %w", err)
+				return setupErr
+			}
 		}
 	} else {
 		// Setup git worktree first
@@ -253,14 +280,25 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 			return setupErr
 		}
 
-		// Create new container
-		if err := i.dockerContainer.Start(i.gitWorktree.GetWorktreePath()); err != nil {
-			// Cleanup git worktree if container creation fails
-			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+		// Create new container or tmux session
+		if i.UseDocker {
+			if err := i.dockerContainer.Start(i.gitWorktree.GetWorktreePath()); err != nil {
+				// Cleanup git worktree if container creation fails
+				if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
+					err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				}
+				setupErr = fmt.Errorf("failed to start new container: %w", err)
+				return setupErr
 			}
-			setupErr = fmt.Errorf("failed to start new container: %w", err)
-			return setupErr
+		} else {
+			if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
+				// Cleanup git worktree if tmux session creation fails
+				if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
+					err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				}
+				setupErr = fmt.Errorf("failed to start new tmux session: %w", err)
+				return setupErr
+			}
 		}
 	}
 
@@ -279,10 +317,14 @@ func (i *Instance) Kill() error {
 	var errs []error
 
 	// Always try to cleanup both resources, even if one fails
-	// Clean up docker container first since it's using the git worktree
-	if i.dockerContainer != nil {
+	// Clean up docker container or tmux session first since it's using the git worktree
+	if i.UseDocker && i.dockerContainer != nil {
 		if err := i.dockerContainer.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to close docker container: %w", err))
+		}
+	} else if !i.UseDocker && i.tmuxSession != nil {
+		if err := i.tmuxSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close tmux session: %w", err))
 		}
 	}
 
@@ -324,23 +366,43 @@ func (i *Instance) Preview() (string, error) {
 	if !i.started || i.Status == Paused {
 		return "", nil
 	}
-	return i.dockerContainer.CaptureContainerOutput()
+	if i.UseDocker {
+		if i.dockerContainer == nil {
+			return "", fmt.Errorf("docker container is nil for instance: %s", i.Title)
+		}
+		return i.dockerContainer.CaptureContainerOutput()
+	} else {
+		if i.tmuxSession == nil {
+			return "", fmt.Errorf("tmux session is nil for instance: %s", i.Title)
+		}
+		return i.tmuxSession.CapturePaneContent()
+	}
 }
 
 func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
 	if !i.started {
 		return false, false
 	}
-	return i.dockerContainer.HasUpdated()
+	if i.UseDocker {
+		return i.dockerContainer.HasUpdated()
+	} else {
+		return i.tmuxSession.HasUpdated()
+	}
 }
 
-// TapEnter sends an enter key press to the docker container if AutoYes is enabled.
+// TapEnter sends an enter key press to the docker container or tmux session if AutoYes is enabled.
 func (i *Instance) TapEnter() {
 	if !i.started || !i.AutoYes {
 		return
 	}
-	if err := i.dockerContainer.TapEnter(); err != nil {
-		log.ErrorLog.Printf("error tapping enter: %v", err)
+	if i.UseDocker {
+		if err := i.dockerContainer.TapEnter(); err != nil {
+			log.ErrorLog.Printf("error tapping enter: %v", err)
+		}
+	} else {
+		if err := i.tmuxSession.TapEnter(); err != nil {
+			log.ErrorLog.Printf("error tapping enter: %v", err)
+		}
 	}
 }
 
@@ -348,7 +410,11 @@ func (i *Instance) Attach() (chan struct{}, error) {
 	if !i.started {
 		return nil, fmt.Errorf("cannot attach instance that has not been started")
 	}
-	return i.dockerContainer.Attach()
+	if i.UseDocker {
+		return i.dockerContainer.Attach()
+	} else {
+		return i.tmuxSession.Attach()
+	}
 }
 
 func (i *Instance) SetPreviewSize(width, height int) error {
@@ -356,7 +422,11 @@ func (i *Instance) SetPreviewSize(width, height int) error {
 		return fmt.Errorf("cannot set preview size for instance that has not been started or " +
 			"is paused")
 	}
-	return i.dockerContainer.SetDetachedSize(width, height)
+	if i.UseDocker {
+		return i.dockerContainer.SetDetachedSize(width, height)
+	} else {
+		return i.tmuxSession.SetDetachedSize(width, height)
+	}
 }
 
 // GetGitWorktree returns the git worktree for the instance
@@ -385,9 +455,13 @@ func (i *Instance) Paused() bool {
 	return i.Status == Paused
 }
 
-// ContainerAlive returns true if the docker container is alive. This is a sanity check before attaching.
+// ContainerAlive returns true if the docker container is alive or tmux session exists. This is a sanity check before attaching.
 func (i *Instance) ContainerAlive() bool {
-	return i.dockerContainer.DoesContainerExist()
+	if i.UseDocker {
+		return i.dockerContainer.DoesContainerExist()
+	} else {
+		return i.tmuxSession.DoesSessionExist()
+	}
 }
 
 // Pause stops the docker container and removes the worktree, preserving the branch
@@ -416,12 +490,21 @@ func (i *Instance) Pause() error {
 		}
 	}
 
-	// Close docker container first since it's using the git worktree
-	if err := i.dockerContainer.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("failed to close docker container: %w", err))
-		log.ErrorLog.Print(err)
-		// Return early if we can't close container to avoid corrupted state
-		return i.combineErrors(errs)
+	// Close docker container or tmux session first since it's using the git worktree
+	if i.UseDocker {
+		if err := i.dockerContainer.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close docker container: %w", err))
+			log.ErrorLog.Print(err)
+			// Return early if we can't close container to avoid corrupted state
+			return i.combineErrors(errs)
+		}
+	} else {
+		if err := i.tmuxSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close tmux session: %w", err))
+			log.ErrorLog.Print(err)
+			// Return early if we can't close tmux session to avoid corrupted state
+			return i.combineErrors(errs)
+		}
 	}
 
 	// Check if worktree exists before trying to remove it
@@ -474,15 +557,27 @@ func (i *Instance) Resume() error {
 		return fmt.Errorf("failed to setup git worktree: %w", err)
 	}
 
-	// Create new docker container
-	if err := i.dockerContainer.Start(i.gitWorktree.GetWorktreePath()); err != nil {
-		log.ErrorLog.Print(err)
-		// Cleanup git worktree if container creation fails
-		if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-			err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+	// Create new docker container or tmux session
+	if i.UseDocker {
+		if err := i.dockerContainer.Start(i.gitWorktree.GetWorktreePath()); err != nil {
 			log.ErrorLog.Print(err)
+			// Cleanup git worktree if container creation fails
+			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
+				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				log.ErrorLog.Print(err)
+			}
+			return fmt.Errorf("failed to start new container: %w", err)
 		}
-		return fmt.Errorf("failed to start new container: %w", err)
+	} else {
+		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
+			log.ErrorLog.Print(err)
+			// Cleanup git worktree if tmux session creation fails
+			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
+				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				log.ErrorLog.Print(err)
+			}
+			return fmt.Errorf("failed to start new tmux session: %w", err)
+		}
 	}
 
 	i.SetStatus(Running)
@@ -520,22 +615,35 @@ func (i *Instance) GetDiffStats() *git.DiffStats {
 	return i.diffStats
 }
 
-// SendPrompt sends a prompt to the tmux session
+// SendPrompt sends a prompt to the docker container or tmux session
 func (i *Instance) SendPrompt(prompt string) error {
 	if !i.started {
 		return fmt.Errorf("instance not started")
 	}
-	if i.dockerContainer == nil {
-		return fmt.Errorf("docker container not initialized")
-	}
-	if err := i.dockerContainer.SendKeys(prompt); err != nil {
-		return fmt.Errorf("error sending keys to docker container: %w", err)
-	}
-
-	// Brief pause to prevent carriage return from being interpreted as newline
-	time.Sleep(100 * time.Millisecond)
-	if err := i.dockerContainer.TapEnter(); err != nil {
-		return fmt.Errorf("error tapping enter: %w", err)
+	if i.UseDocker {
+		if i.dockerContainer == nil {
+			return fmt.Errorf("docker container not initialized")
+		}
+		if err := i.dockerContainer.SendKeys(prompt); err != nil {
+			return fmt.Errorf("error sending keys to docker container: %w", err)
+		}
+		// Brief pause to prevent carriage return from being interpreted as newline
+		time.Sleep(100 * time.Millisecond)
+		if err := i.dockerContainer.TapEnter(); err != nil {
+			return fmt.Errorf("error tapping enter: %w", err)
+		}
+	} else {
+		if i.tmuxSession == nil {
+			return fmt.Errorf("tmux session not initialized")
+		}
+		if err := i.tmuxSession.SendKeys(prompt); err != nil {
+			return fmt.Errorf("error sending keys to tmux session: %w", err)
+		}
+		// Brief pause to prevent carriage return from being interpreted as newline
+		time.Sleep(100 * time.Millisecond)
+		if err := i.tmuxSession.TapEnter(); err != nil {
+			return fmt.Errorf("error tapping enter: %w", err)
+		}
 	}
 
 	return nil

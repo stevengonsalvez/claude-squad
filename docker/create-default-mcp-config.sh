@@ -1,0 +1,43 @@
+#!/bin/bash
+# ABOUTME: Creates default MCP servers configuration file in user's config directory
+# ABOUTME: This is called during first setup to ensure MCP servers are configured
+
+CONFIG_DIR="$HOME/.claude-squad"
+MCP_CONFIG_FILE="$CONFIG_DIR/mcp-servers.txt"
+
+# Create config directory if it doesn't exist
+mkdir -p "$CONFIG_DIR"
+
+# Create default MCP servers file if it doesn't exist
+if [ ! -f "$MCP_CONFIG_FILE" ]; then
+    cat > "$MCP_CONFIG_FILE" << 'EOF'
+# MCP Server Configuration File for claude-squad
+# Each line should contain a complete claude mcp add or claude mcp add-json command
+# Use ${VAR_NAME} for environment variable substitution
+# Lines starting with # are comments and will be ignored
+
+# Context7 - Up-to-date documentation and code examples from source
+claude mcp add -s user --transport sse context7 https://mcp.context7.com/sse
+
+# Add more MCP servers below as needed
+# Example formats:
+# claude mcp add -s user <name> -- <command> <args>
+# claude mcp add-json <name> -s user '{"command":"...","args":[...],"env":{...}}'
+
+# Popular MCP servers you can add:
+# Filesystem access
+# claude mcp add -s user filesystem -- npx -y @modelcontextprotocol/server-filesystem
+
+# GitHub integration (requires GITHUB_TOKEN)
+# claude mcp add-json github -s user '{"command":"npx","args":["-y","@modelcontextprotocol/server-github"],"env":{"GITHUB_TOKEN":"${GITHUB_TOKEN}"}}'
+
+# Browser automation
+# claude mcp add -s user browser -- npx -y @modelcontextprotocol/server-browser
+
+# Memory/knowledge base
+# claude mcp add -s user memory -- npx -y @modelcontextprotocol/server-memory
+EOF
+    echo "Created default MCP servers configuration at: $MCP_CONFIG_FILE"
+else
+    echo "MCP servers configuration already exists at: $MCP_CONFIG_FILE"
+fi

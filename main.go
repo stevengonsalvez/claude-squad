@@ -5,9 +5,11 @@ import (
 	"claude-squad/config"
 	"claude-squad/daemon"
 	"claude-squad/log"
+	"claude-squad/cmd"
 	"claude-squad/session"
 	"claude-squad/session/docker"
 	"claude-squad/session/git"
+	"claude-squad/session/tmux"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,6 +24,7 @@ var (
 	programFlag     string
 	autoYesFlag     bool
 	daemonFlag      bool
+	dockerFlag      bool
 	dockerImageFlag string
 	rootCmd     = &cobra.Command{
 		Use:   "claude-squad",
@@ -72,7 +75,7 @@ var (
 				log.ErrorLog.Printf("failed to stop daemon: %v", err)
 			}
 
-			return app.Run(ctx, program, autoYes, dockerImageFlag)
+			return app.Run(ctx, program, autoYes, dockerFlag, dockerImageFlag)
 		},
 	}
 
@@ -104,6 +107,12 @@ var (
 				return fmt.Errorf("failed to cleanup docker containers: %w", err)
 			}
 			fmt.Println("Docker containers have been cleaned up")
+
+			// Cleanup tmux sessions
+			if err := tmux.CleanupSessions(cmd.MakeExecutor()); err != nil {
+				return fmt.Errorf("failed to cleanup tmux sessions: %w", err)
+			}
+			fmt.Println("Tmux sessions have been cleaned up")
 
 			if err := git.CleanupWorktrees(); err != nil {
 				return fmt.Errorf("failed to cleanup worktrees: %w", err)
@@ -151,8 +160,10 @@ var (
 func init() {
 	rootCmd.Flags().StringVarP(&programFlag, "program", "p", "",
 		"Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')")
+	rootCmd.Flags().BoolVar(&dockerFlag, "docker", false,
+		"Use Docker containers for session isolation (enhanced features)")
 	rootCmd.Flags().StringVarP(&dockerImageFlag, "docker-image", "d", "",
-		"Custom Docker image to use for new instances (e.g. 'myrepo/custom-aider:latest')")
+		"Custom Docker image to use with --docker flag (e.g. 'myrepo/custom-aider:latest')")
 	rootCmd.Flags().BoolVarP(&autoYesFlag, "autoyes", "y", false,
 		"[experimental] If enabled, all instances will automatically accept prompts")
 	rootCmd.Flags().BoolVar(&daemonFlag, "daemon", false, "Run a program that loads all sessions"+

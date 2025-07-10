@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -125,20 +126,25 @@ func (d *DockerContainer) ensureImageExists() error {
 		return fmt.Errorf("failed to find project root: %w", err)
 	}
 	
-	var dockerfilePath string
-	switch {
-	case d.program == ProgramClaude:
-		dockerfilePath = filepath.Join(projectRoot, "docker", "images", "claude.Dockerfile")
-	case strings.HasPrefix(d.program, ProgramAider):
-		dockerfilePath = filepath.Join(projectRoot, "docker", "images", "aider.Dockerfile")
-	case strings.HasPrefix(d.program, ProgramGemini):
-		dockerfilePath = filepath.Join(projectRoot, "docker", "images", "gemini.Dockerfile")
-	default:
-		dockerfilePath = filepath.Join(projectRoot, "docker", "images", "aider.Dockerfile")
+	// Use the enhanced Dockerfile
+	dockerfilePath := filepath.Join(projectRoot, "docker", "Dockerfile")
+	
+	// Get git config for build args
+	gitUserName, _ := exec.Command("git", "config", "--global", "--get", "user.name").Output()
+	gitUserEmail, _ := exec.Command("git", "config", "--global", "--get", "user.email").Output()
+	currentUser, _ := user.Current()
+	
+	// Build args for user matching and git config
+	buildArgs := fmt.Sprintf("--build-arg USER_UID=%s --build-arg USER_GID=%s", currentUser.Uid, currentUser.Gid)
+	if len(gitUserName) > 0 {
+		buildArgs += fmt.Sprintf(" --build-arg GIT_USER_NAME=%q", strings.TrimSpace(string(gitUserName)))
+	}
+	if len(gitUserEmail) > 0 {
+		buildArgs += fmt.Sprintf(" --build-arg GIT_USER_EMAIL=%q", strings.TrimSpace(string(gitUserEmail)))
 	}
 	
 	// Build the image using docker build command
-	buildCmd := fmt.Sprintf("docker build -t %s -f %s %s", imageName, dockerfilePath, projectRoot)
+	buildCmd := fmt.Sprintf("docker build %s -t %s -f %s %s", buildArgs, imageName, dockerfilePath, filepath.Join(projectRoot, "docker"))
 	if err := d.cmdExec.Run(exec.Command("sh", "-c", buildCmd)); err != nil {
 		return fmt.Errorf("failed to build Docker image %s: %w", imageName, err)
 	}
@@ -177,18 +183,8 @@ func (d *DockerContainer) getDockerImage() string {
 		return d.customImage
 	}
 
-	// Default fallback logic for built-in programs
-	switch {
-	case d.program == ProgramClaude:
-		return "claudesquad/claude:latest"
-	case strings.HasPrefix(d.program, ProgramAider):
-		return "claudesquad/aider:latest"
-	case strings.HasPrefix(d.program, ProgramGemini):
-		return "claudesquad/gemini:latest"
-	default:
-		// For custom programs, use aider as the base since it's the most versatile
-		return "claudesquad/aider:latest"
-	}
+	// All programs now use the enhanced claude-squad image
+	return "claudesquad/enhanced:latest"
 }
 
 // GetDockerImageWithConfig returns the Docker image for the program using config mappings
@@ -208,23 +204,16 @@ func GetDockerImageWithConfig(program string, configMappings map[string]string) 
 		}
 	}
 
-	// Fallback to default logic
-	switch {
-	case program == ProgramClaude:
-		return "claudesquad/claude:latest"
-	case strings.HasPrefix(program, ProgramAider):
-		return "claudesquad/aider:latest"
-	case strings.HasPrefix(program, ProgramGemini):
-		return "claudesquad/gemini:latest"
-	default:
-		return "claudesquad/aider:latest"
-	}
+	// All programs now use the enhanced claude-squad image
+	return "claudesquad/enhanced:latest"
 }
 
 // Start creates and starts a new Docker container, then attaches to it. Program is the command to run in
 // the container (ex. claude). workdir is the git worktree directory.
 func (d *DockerContainer) Start(workDir string) error {
 	ctx := context.Background()
+
+	log.InfoLog.Printf("Starting Docker container: %s with program: %s", d.sanitizedName, d.program)
 
 	// Check if the container already exists
 	if d.DoesContainerExist() {
@@ -236,14 +225,35 @@ func (d *DockerContainer) Start(workDir string) error {
 		return fmt.Errorf("failed to ensure Docker image exists: %w", err)
 	}
 
+	// Prepare mounts
+	mounts, err := d.prepareMounts(workDir)
+	if err != nil {
+		log.ErrorLog.Printf("Warning: Failed to prepare some mounts: %v", err)
+	}
+	
+	// Prepare environment variables
+	env := d.prepareEnvironment()
+
 	// Container configuration
 	var cmd []string
-	if strings.Contains(d.program, " ") {
-		// For programs with arguments like "aider --model ollama_chat/gemma3:1b"
-		cmd = strings.Fields(d.program)
-	} else {
-		cmd = []string{d.program}
+	// Check if program should use Gemini
+	if d.program == ProgramGemini || strings.HasPrefix(d.program, ProgramGemini) {
+		cmd = append(cmd, "--gemini")
+		// If program has additional arguments, add them
+		if strings.Contains(d.program, " ") {
+			args := strings.Fields(d.program)
+			if len(args) > 1 {
+				cmd = append(cmd, args[1:]...)
+			}
+		}
+	} else if strings.Contains(d.program, " ") {
+		// For programs with arguments like "claude --some-flag"
+		args := strings.Fields(d.program)
+		if len(args) > 1 {
+			cmd = append(cmd, args[1:]...)
+		}
 	}
+	// If no arguments, cmd will be empty and container will start with default (Claude)
 	
 	config := &container.Config{
 		Image:        d.getDockerImage(),
@@ -255,34 +265,30 @@ func (d *DockerContainer) Start(workDir string) error {
 		AttachStderr: true,
 		OpenStdin:    true,
 		StdinOnce:    false,
-		Env: []string{
-			"TERM=xterm-256color",
-		},
+		Env: env,
 	}
-
-	// Host configuration with volume mount
+	
+	// Host configuration with enhanced mounts
 	hostConfig := &container.HostConfig{
-		Mounts: []mount.Mount{
-			{
-				Type:   mount.TypeBind,
-				Source: workDir,
-				Target: "/workspace",
-			},
-		},
+		Mounts: mounts,
 		// Auto-remove containers when they stop
 		AutoRemove: false,
 	}
 
 	// Create the container
+	log.InfoLog.Printf("Creating Docker container with name: %s", d.sanitizedName)
 	resp, err := d.dockerClient.ContainerCreate(ctx, config, hostConfig, nil, nil, d.sanitizedName)
 	if err != nil {
 		return fmt.Errorf("error creating docker container: %w", err)
 	}
 	d.containerID = resp.ID
+	log.InfoLog.Printf("Created container with ID: %s", d.containerID)
 
 	// Start the container
+	log.InfoLog.Printf("Starting container: %s", d.containerID)
 	if err := d.dockerClient.ContainerStart(ctx, d.containerID, container.StartOptions{}); err != nil {
 		// Cleanup on failure
+		log.ErrorLog.Printf("Failed to start container %s: %v", d.containerID, err)
 		if removeErr := d.dockerClient.ContainerRemove(ctx, d.containerID, container.RemoveOptions{Force: true}); removeErr != nil {
 			err = fmt.Errorf("%v (cleanup error: %v)", err, removeErr)
 		}
@@ -307,8 +313,10 @@ func (d *DockerContainer) Start(workDir string) error {
 		}
 	}
 
+	log.InfoLog.Printf("Container %s started successfully, restoring state...", d.containerID)
 	err = d.Restore()
 	if err != nil {
+		log.ErrorLog.Printf("Failed to restore container %s: %v", d.containerID, err)
 		if cleanupErr := d.Close(); cleanupErr != nil {
 			err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
 		}
@@ -397,6 +405,12 @@ func (d *DockerContainer) SendKeys(keys string) error {
 
 // HasUpdated checks if the container output has changed since the last tick.
 func (d *DockerContainer) HasUpdated() (updated bool, hasPrompt bool) {
+	// Check if container is properly initialized
+	if d.containerID == "" {
+		log.ErrorLog.Printf("HasUpdated called on container with empty ID: %s", d.sanitizedName)
+		return false, false
+	}
+	
 	content, err := d.CaptureContainerOutput()
 	if err != nil {
 		log.ErrorLog.Printf("error capturing container output in status monitor: %v", err)
@@ -587,6 +601,15 @@ func (d *DockerContainer) DoesContainerExist() bool {
 func (d *DockerContainer) CaptureContainerOutput() (string, error) {
 	ctx := context.Background()
 	
+	// Check if container ID is set
+	if d.containerID == "" {
+		log.ErrorLog.Printf("Container ID is empty for container: %s", d.sanitizedName)
+		return "", fmt.Errorf("container ID is empty - container may not have been started properly")
+	}
+	
+	// Log container status for debugging
+	log.InfoLog.Printf("Capturing output for container ID: %s (name: %s)", d.containerID, d.sanitizedName)
+	
 	// Get container logs
 	options := container.LogsOptions{
 		ShowStdout: true,
@@ -596,7 +619,7 @@ func (d *DockerContainer) CaptureContainerOutput() (string, error) {
 
 	reader, err := d.dockerClient.ContainerLogs(ctx, d.containerID, options)
 	if err != nil {
-		return "", fmt.Errorf("error getting container logs: %w", err)
+		return "", fmt.Errorf("error getting container logs for ID %s: %w", d.containerID, err)
 	}
 	defer reader.Close()
 
@@ -614,6 +637,105 @@ func (d *DockerContainer) CaptureContainerOutputWithOptions(start, end string) (
 	// For Docker, we'll just use the standard capture since Docker logs API
 	// doesn't have the same line-based options as tmux
 	return d.CaptureContainerOutput()
+}
+
+// prepareMounts prepares all necessary volume mounts for the container
+func (d *DockerContainer) prepareMounts(workDir string) ([]mount.Mount, error) {
+	mounts := []mount.Mount{
+		{
+			Type:   mount.TypeBind,
+			Source: workDir,
+			Target: "/workspace",
+		},
+	}
+
+	// Get user home directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return mounts, fmt.Errorf("failed to get user home directory: %w", err)
+	}
+
+	// Mount .claude directory for authentication and conversation history
+	claudeDir := filepath.Join(homeDir, ".claude")
+	if _, err := os.Stat(claudeDir); err == nil {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: claudeDir,
+			Target: "/home/claude-user/.claude",
+		})
+		log.InfoLog.Printf("Mounting Claude directory: %s", claudeDir)
+	} else {
+		log.InfoLog.Printf("Claude directory not found, skipping mount: %s", claudeDir)
+	}
+
+	// Mount .gemini directory for Gemini OAuth credentials (if exists)
+	geminiDir := filepath.Join(homeDir, ".gemini")
+	if _, err := os.Stat(geminiDir); err == nil {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: geminiDir,
+			Target: "/home/claude-user/.gemini",
+		})
+		log.InfoLog.Printf("Mounting Gemini directory: %s", geminiDir)
+	} else {
+		log.InfoLog.Printf("Gemini directory not found, skipping mount: %s", geminiDir)
+	}
+
+	// Mount .gitconfig for git user configuration (read-only)
+	gitConfigPath := filepath.Join(homeDir, ".gitconfig")
+	if _, err := os.Stat(gitConfigPath); err == nil {
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   gitConfigPath,
+			Target:   "/home/claude-user/.gitconfig",
+			ReadOnly: true,
+		})
+		log.InfoLog.Printf("Mounting git config: %s", gitConfigPath)
+	} else {
+		log.InfoLog.Printf("Git config not found, skipping mount: %s", gitConfigPath)
+	}
+
+	// Mount user's MCP servers configuration if it exists
+	mcpConfigPath := filepath.Join(homeDir, ".claude-squad", "mcp-servers.txt")
+	if _, err := os.Stat(mcpConfigPath); err == nil {
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   mcpConfigPath,
+			Target:   "/home/claude-user/.claude/mcp-servers.txt",
+			ReadOnly: true,
+		})
+		log.InfoLog.Printf("Mounting MCP servers config: %s", mcpConfigPath)
+	} else {
+		log.InfoLog.Printf("MCP servers config not found, using defaults: %s", mcpConfigPath)
+	}
+
+	return mounts, nil
+}
+
+// prepareEnvironment prepares environment variables for the container
+func (d *DockerContainer) prepareEnvironment() []string {
+	env := []string{
+		"TERM=xterm-256color",
+	}
+
+	// Add GitHub token if available
+	if githubToken := os.Getenv("GITHUB_TOKEN"); githubToken != "" {
+		env = append(env, "GITHUB_TOKEN="+githubToken)
+		log.InfoLog.Printf("GitHub token configured for git authentication")
+	}
+
+	// Add Google AI Studio API key if available (fallback for Gemini)
+	if apiKey := os.Getenv("GOOGLE_AI_STUDIO_API_KEY"); apiKey != "" {
+		env = append(env, "GOOGLE_AI_STUDIO_API_KEY="+apiKey)
+		log.InfoLog.Printf("Google AI Studio API key configured")
+	}
+
+	// Set AI CLI preference if using Gemini
+	if d.program == ProgramGemini || strings.HasPrefix(d.program, ProgramGemini) {
+		env = append(env, "AI_CLI_PREFERENCE=gemini")
+	}
+
+	return env
 }
 
 // CleanupContainers kills all Docker containers that start with the prefix
