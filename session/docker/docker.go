@@ -623,13 +623,34 @@ func (d *DockerContainer) CaptureContainerOutput() (string, error) {
 	}
 	defer reader.Close()
 
-	buf := new(bytes.Buffer)
-	_, err = stdcopy.StdCopy(buf, buf, reader)
+	// Use separate buffers for stdout and stderr
+	stdoutBuf := new(bytes.Buffer)
+	stderrBuf := new(bytes.Buffer)
+	
+	// Try to demultiplex the logs
+	_, err = stdcopy.StdCopy(stdoutBuf, stderrBuf, reader)
 	if err != nil {
-		return "", fmt.Errorf("error reading container logs: %w", err)
+		// If demultiplexing fails, try reading raw content
+		// This can happen if logs aren't multiplexed
+		reader.Close()
+		reader, err = d.dockerClient.ContainerLogs(ctx, d.containerID, options)
+		if err != nil {
+			return "", fmt.Errorf("error getting container logs for ID %s: %w", d.containerID, err)
+		}
+		defer reader.Close()
+		
+		// Read raw content
+		rawBuf := new(bytes.Buffer)
+		_, err = rawBuf.ReadFrom(reader)
+		if err != nil {
+			return "", fmt.Errorf("error reading raw container logs: %w", err)
+		}
+		return rawBuf.String(), nil
 	}
 
-	return buf.String(), nil
+	// Combine stdout and stderr
+	combined := stdoutBuf.String() + stderrBuf.String()
+	return combined, nil
 }
 
 // CaptureContainerOutputWithOptions captures the container output with additional options

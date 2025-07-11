@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     sudo \
     openssh-client \
     ca-certificates \
+    gettext-base \
     && rm -rf /var/lib/apt/lists/*
 
 # Install additional system packages if specified
@@ -26,16 +27,10 @@ else \
     echo "No additional system packages specified"; \
 fi
 
-# Create a non-root user with matching host UID/GID
-ARG USER_UID=1000
-ARG USER_GID=1000
-RUN if getent group $USER_GID > /dev/null 2>&1; then \
-        GROUP_NAME=$(getent group $USER_GID | cut -d: -f1); \
-    else \
-        groupadd -g $USER_GID claude-user && GROUP_NAME=claude-user; \
-    fi && \
-    useradd -m -s /bin/bash -u $USER_UID -g $GROUP_NAME claude-user && \
-    echo "claude-user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+# Use the existing node user (UID 1000) and give it sudo permissions
+RUN echo "node ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    # Create claude-user symlink for compatibility
+    ln -s /home/node /home/claude-user
 
 # Create app directory
 WORKDIR /app
@@ -47,7 +42,7 @@ RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli
 ENV PATH="/usr/local/bin:${PATH}"
 
 # Create directories for configuration
-RUN mkdir -p /app/.claude /home/claude-user/.claude
+RUN mkdir -p /app/.claude /home/node/.claude
 
 # Copy startup script
 COPY scripts/startup.sh /app/
@@ -59,19 +54,19 @@ COPY install-mcp-servers.sh /app/
 RUN chmod +x /app/install-mcp-servers.sh
 
 # Set proper ownership for everything
-RUN chown -R claude-user /app /home/claude-user
+RUN chown -R node:node /app /home/node
 
 # Switch to non-root user
-USER claude-user
+USER node
 
 # Set HOME immediately after switching user
-ENV HOME=/home/claude-user
+ENV HOME=/home/node
 
 # Install uv (Astral) for claude-user (needed for some MCP servers)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Add claude-user's local bin to PATH
-ENV PATH="/home/claude-user/.local/bin:${PATH}"
+# Add node user's local bin to PATH
+ENV PATH="/home/node/.local/bin:${PATH}"
 
 # Install MCP servers from configuration file
 RUN /app/install-mcp-servers.sh

@@ -2,10 +2,10 @@ package main
 
 import (
 	"claude-squad/app"
+	cmdexec "claude-squad/cmd"
 	"claude-squad/config"
 	"claude-squad/daemon"
 	"claude-squad/log"
-	"claude-squad/cmd"
 	"claude-squad/session"
 	"claude-squad/session/docker"
 	"claude-squad/session/git"
@@ -109,7 +109,7 @@ var (
 			fmt.Println("Docker containers have been cleaned up")
 
 			// Cleanup tmux sessions
-			if err := tmux.CleanupSessions(cmd.MakeExecutor()); err != nil {
+			if err := tmux.CleanupSessions(cmdexec.MakeExecutor()); err != nil {
 				return fmt.Errorf("failed to cleanup tmux sessions: %w", err)
 			}
 			fmt.Println("Tmux sessions have been cleaned up")

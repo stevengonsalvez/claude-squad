@@ -25,7 +25,9 @@ chmod +x test-docker-setup.sh
 ```
 
 ### 3. Check Prerequisites
-
+# claude-squad
+./main.go:8:2: "claude-squad/cmd" imported and not used
+./main.go:112:39: cmd.MakeExecutor undefined (type *cobra.Command has no field or method MakeExecutor)
 **Claude Authentication:**
 ```bash
 # Check if Claude is authenticated
