@@ -123,6 +123,58 @@ underlying program (ex. `claude`) to the latest version.
 2. **git worktrees** to isolate codebases so each session works on its own branch
 3. A simple TUI interface for easy navigation and management
 
+### Docker Usage
+
+Claude Squad can also be run in Docker containers for isolated, reproducible environments.
+
+#### Available Container Variants
+
+- **Main Container** (`claude-squad:latest`) - Full container with development tools (~1.8GB)
+- **Minimal Container** (`claude-squad:minimal`) - Lightweight with just essentials (~130MB)  
+- **Development Container** (`claude-squad:dev`) - Complete development environment (~2GB+)
+
+#### Quick Start with Docker
+
+```bash
+# Build the main container
+docker build -t claude-squad:latest .
+
+# Run with workspace persistence
+docker run -it --rm \
+  -v $(pwd)/workspace:/workspace \
+  -v ~/.ssh:/home/user/.ssh:ro \
+  -v ~/.gitconfig:/home/user/.gitconfig:ro \
+  -e GIT_USER_NAME="Your Name" \
+  -e GIT_USER_EMAIL="your.email@example.com" \
+  -e ANTHROPIC_API_KEY="your-api-key" \
+  claude-squad:latest
+
+# Run minimal container
+docker run -it --rm claude-squad:minimal
+
+# Use Docker Compose for development
+docker-compose up
+```
+
+#### Docker-in-Docker Support
+
+For full functionality, mount the Docker socket:
+
+```bash
+docker run -it --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v $(pwd)/workspace:/workspace \
+  claude-squad:latest
+```
+
+#### Environment Variables
+
+- `GIT_USER_NAME` - Git user name
+- `GIT_USER_EMAIL` - Git user email  
+- `ANTHROPIC_API_KEY` - Claude API key
+- `OPENAI_API_KEY` - OpenAI API key
+- `CS_DEFAULT_PROGRAM` - Default AI assistant program (default: "claude")
+
 ### License
 
 [AGPL-3.0](LICENSE.md)

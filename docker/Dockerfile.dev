@@ -1,0 +1,245 @@
+# ABOUTME: Full development Dockerfile for Claude Squad - complete toolchain (~2GB) with all language runtimes and tools
+# Includes comprehensive development environment for AI assistant workflows
+
+# Build stage
+FROM golang:1.23 AS builder
+
+WORKDIR /build
+
+# Copy go mod files first for better layer caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the binary
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o claude-squad .
+
+# Full development runtime stage
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies and development tools
+RUN apt-get update && apt-get install -y \
+    # Core system tools
+    git \
+    curl \
+    wget \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    software-properties-common \
+    apt-transport-https \
+    # Build tools
+    build-essential \
+    cmake \
+    make \
+    gcc \
+    g++ \
+    clang \
+    # tmux and terminal tools
+    tmux \
+    screen \
+    # SSH and networking
+    openssh-client \
+    netcat-openbsd \
+    # Text editors and tools
+    vim \
+    nano \
+    emacs-nox \
+    # File and process management
+    htop \
+    tree \
+    jq \
+    unzip \
+    zip \
+    # Development utilities
+    sqlite3 \
+    postgresql-client \
+    redis-tools \
+    # Clean up
+    && rm -rf /var/lib/apt/lists/*
+
+# Install GitHub CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CLI for Docker-in-Docker support
+RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y docker-ce-cli docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (latest LTS) and JavaScript tools
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g \
+        yarn \
+        pnpm \
+        typescript \
+        ts-node \
+        @vue/cli \
+        @angular/cli \
+        create-react-app \
+        vite \
+        eslint \
+        prettier \
+        nodemon \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python and Python development tools
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python3-dev \
+    python-is-python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python package managers and tools
+RUN pip3 install --no-cache-dir \
+    pip --upgrade \
+    poetry \
+    pipenv \
+    black \
+    flake8 \
+    mypy \
+    pytest \
+    jupyter \
+    ipython \
+    requests \
+    fastapi \
+    flask \
+    django
+
+# Install uv (fast Python package manager)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+# Install Go (latest)
+RUN wget -q https://go.dev/dl/go1.23.0.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz \
+    && rm go1.23.0.linux-amd64.tar.gz
+ENV PATH="/usr/local/go/bin:$PATH"
+
+# Install Rust and Cargo
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:$PATH"
+
+# Install additional Rust tools
+RUN . /root/.cargo/env && cargo install \
+    cargo-watch \
+    cargo-edit \
+    ripgrep \
+    fd-find \
+    bat \
+    exa
+
+# Install Java (OpenJDK 17)
+RUN apt-get update && apt-get install -y \
+    openjdk-17-jdk \
+    maven \
+    gradle \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Ruby and Rails
+RUN apt-get update && apt-get install -y \
+    ruby \
+    ruby-dev \
+    && gem install bundler rails \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install PHP and Composer
+RUN apt-get update && apt-get install -y \
+    php \
+    php-cli \
+    php-mbstring \
+    php-xml \
+    php-curl \
+    && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install AI assistant tools
+RUN pip3 install --no-cache-dir aider-chat
+
+# Install Claude CLI (if available)
+RUN curl -fsSL https://claude.ai/claude.deb -o claude.deb \
+    && dpkg -i claude.deb || true \
+    && rm claude.deb \
+    || echo "Claude CLI not available via deb package"
+
+# Install additional development tools
+RUN apt-get update && apt-get install -y \
+    # Database tools
+    mysql-client \
+    # Version control
+    git-lfs \
+    # Documentation tools
+    pandoc \
+    # Network tools
+    nmap \
+    telnet \
+    # Container tools
+    podman \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd --gid 1000 user \
+    && useradd --uid 1000 --gid user --shell /bin/bash --create-home user
+
+# Add user to docker group for Docker socket access
+RUN groupadd docker || true \
+    && usermod -aG docker user
+
+# Set up workspace directory
+RUN mkdir -p /workspace \
+    && chown -R user:user /workspace
+
+# Copy claude-squad binary from builder
+COPY --from=builder /build/claude-squad /usr/local/bin/claude-squad
+RUN chmod +x /usr/local/bin/claude-squad
+
+# Copy development entrypoint script
+COPY docker/entrypoint-dev.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Install starship prompt before switching to non-root user
+RUN curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
+
+# Switch to non-root user and set up user environment
+USER user
+WORKDIR /workspace
+
+# Set up user directories
+RUN mkdir -p /home/user/.config /home/user/.local/bin /home/user/.ssh /home/user/.cache
+
+# Set up development shell configuration
+RUN echo 'eval "$(starship init bash)"' >> /home/user/.bashrc \
+    && echo 'alias ll="ls -la"' >> /home/user/.bashrc \
+    && echo 'alias la="ls -la"' >> /home/user/.bashrc \
+    && echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/user/.bashrc
+
+# Environment variables
+ENV HOME=/home/user
+ENV USER=user
+ENV SHELL=/bin/bash
+ENV WORKSPACE_DIR=/workspace
+ENV CS_DEFAULT_PROGRAM=claude
+ENV PATH="/home/user/.local/bin:/home/user/.cargo/bin:$PATH"
+
+# Expose development ports
+EXPOSE 3000-9000
+
+# Default entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Default command runs claude-squad
+CMD ["claude-squad"]

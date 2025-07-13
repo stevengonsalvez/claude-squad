@@ -1,0 +1,77 @@
+# ABOUTME: Minimal Dockerfile for Claude Squad - lightweight container (~200MB) with just essential tools
+# Only includes claude-squad binary, tmux, git, and GitHub CLI for basic AI assistant management
+
+# Build stage
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /build
+
+# Copy go mod files first for better layer caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the binary
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o claude-squad .
+
+# Minimal runtime stage
+FROM alpine:3.19
+
+# Install minimal essential tools
+RUN apk add --no-cache \
+    # Core tools
+    git \
+    curl \
+    ca-certificates \
+    # tmux is essential for claude-squad
+    tmux \
+    # SSH client for git operations
+    openssh-client \
+    # Shell and basic utilities
+    bash \
+    coreutils \
+    # Process tools
+    procps \
+    # Text editor
+    vim
+
+# Install GitHub CLI (minimal)
+RUN apk add --no-cache github-cli
+
+# Create non-root user
+RUN addgroup -g 1000 user \
+    && adduser -u 1000 -G user -s /bin/bash -D user
+
+# Set up workspace directory
+RUN mkdir -p /workspace \
+    && chown -R user:user /workspace
+
+# Copy claude-squad binary from builder
+COPY --from=builder /build/claude-squad /usr/local/bin/claude-squad
+RUN chmod +x /usr/local/bin/claude-squad
+
+# Copy minimal entrypoint script
+COPY docker/entrypoint-minimal.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Switch to non-root user
+USER user
+WORKDIR /workspace
+
+# Set up user environment
+RUN mkdir -p /home/user/.config /home/user/.local/bin /home/user/.ssh
+
+# Environment variables
+ENV HOME=/home/user
+ENV USER=user
+ENV SHELL=/bin/bash
+ENV WORKSPACE_DIR=/workspace
+ENV CS_DEFAULT_PROGRAM=claude
+
+# Default entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Default command runs claude-squad
+CMD ["claude-squad"]

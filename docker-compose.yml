@@ -1,0 +1,178 @@
+# ABOUTME: Docker Compose configuration for Claude Squad local development with AI assistant tools and DinD support
+
+version: '3.8'
+
+services:
+  claude-squad:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: claude-squad:latest
+    container_name: claude-squad-dev
+    
+    # Interactive TTY for TUI application
+    tty: true
+    stdin_open: true
+    
+    # Environment variables
+    environment:
+      # Git configuration
+      - GIT_USER_NAME=${GIT_USER_NAME:-Claude Squad User}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-user@claudesquad.local}
+      
+      # AI Assistant API Keys
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      
+      # Claude Squad configuration
+      - CS_DEFAULT_PROGRAM=${CS_DEFAULT_PROGRAM:-claude}
+      - WORKSPACE_DIR=/workspace
+      
+      # Terminal configuration
+      - TERM=xterm-256color
+      - COLORTERM=truecolor
+    
+    # Volume mounts for persistence and tool access
+    volumes:
+      # Workspace persistence
+      - ./workspace:/workspace
+      
+      # Configuration persistence
+      - claude-squad-config:/home/user/.config
+      - claude-squad-local:/home/user/.local
+      
+      # Git configuration (optional - mount host git config)
+      - ~/.gitconfig:/home/user/.gitconfig:ro
+      
+      # SSH keys for git operations (optional - mount host SSH keys)
+      - ~/.ssh:/home/user/.ssh:ro
+      
+      # Docker socket for Docker-in-Docker support
+      - /var/run/docker.sock:/var/run/docker.sock
+      
+      # Tmux socket directory for session persistence
+      - claude-squad-tmux:/tmp/tmux-1000
+    
+    # Network configuration
+    ports:
+      # Development server ports
+      - "3000-3010:3000-3010"
+      - "8000-8010:8000-8010"
+      - "9000-9010:9000-9000"
+    
+    # Security context
+    user: "1000:1000"
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Resource limits (adjust based on your system)
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+  # Optional: Separate container for minimal claude-squad usage
+  claude-squad-minimal:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.minimal
+    image: claude-squad:minimal
+    container_name: claude-squad-minimal
+    profiles: ["minimal"]
+    
+    tty: true
+    stdin_open: true
+    
+    environment:
+      - GIT_USER_NAME=${GIT_USER_NAME:-Claude Squad User}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-user@claudesquad.local}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CS_DEFAULT_PROGRAM=${CS_DEFAULT_PROGRAM:-claude}
+    
+    volumes:
+      - ./workspace:/workspace
+      - ~/.gitconfig:/home/user/.gitconfig:ro
+      - ~/.ssh:/home/user/.ssh:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    
+    user: "1000:1000"
+    restart: unless-stopped
+
+  # Optional: Development container with full toolchain
+  claude-squad-dev-full:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    image: claude-squad:dev
+    container_name: claude-squad-dev-full
+    profiles: ["dev"]
+    
+    tty: true
+    stdin_open: true
+    
+    environment:
+      - GIT_USER_NAME=${GIT_USER_NAME:-Claude Squad User}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-user@claudesquad.local}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - CS_DEFAULT_PROGRAM=${CS_DEFAULT_PROGRAM:-claude}
+      
+      # Development environment variables
+      - NODE_ENV=development
+      - PYTHON_ENV=development
+    
+    volumes:
+      - ./workspace:/workspace
+      - claude-squad-dev-config:/home/user/.config
+      - claude-squad-dev-local:/home/user/.local
+      - claude-squad-dev-cache:/home/user/.cache
+      - ~/.gitconfig:/home/user/.gitconfig:ro
+      - ~/.ssh:/home/user/.ssh:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    
+    ports:
+      - "3000-3020:3000-3020"
+      - "8000-8020:8000-8020"
+      - "9000-9020:9000-9020"
+    
+    user: "1000:1000"
+    restart: unless-stopped
+    
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+
+# Named volumes for data persistence
+volumes:
+  claude-squad-config:
+    driver: local
+  claude-squad-local:
+    driver: local
+  claude-squad-tmux:
+    driver: local
+  claude-squad-dev-config:
+    driver: local
+  claude-squad-dev-local:
+    driver: local
+  claude-squad-dev-cache:
+    driver: local
+
+# Network configuration (optional)
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
